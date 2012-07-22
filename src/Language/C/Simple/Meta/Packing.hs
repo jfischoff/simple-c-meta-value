@@ -1,14 +1,36 @@
-module Packing where
-import MetaValue where
+module Language.C.Simple.Meta.Packing where
+import Language.C.Simple.Meta.Types 
+import Language.C.Simple.Meta.Utils
+import Language.C.Simple.CValue
+import Language.C.Simple.CType
+import Language.C.Simple.Meta.Class
+import Language.C.Simple.Meta.SizeOf
+import Language.C.Simple.Meta.Convert
+import Data.Int
+import Control.Monad.Identity
+import qualified Data.ByteString.Lazy as BS
+import qualified Data.Binary as DB
+import qualified Data.Binary.Put as DB
+import qualified Data.Binary.Get as DB
+import Control.Monad.State
+import Data.Word
+import Control.Applicative
+import Debug.Trace.Helpers
+import Control.Arrow
+import Data.Maybe
+
+
 
 version = 1 :: Word32
+type Offset = Word32
+type Fixup = Word32
 
 mk_header fixups = DB.runPut $ do
     DB.putWord32le version
     DB.putWord32le (fromIntegral $ length fixups :: Word32) 
     mapM_ DB.putWord32le fixups
 
-packWord32 = DB.runPut . DB.putWord32le
+packWord32   = DB.runPut . DB.putWord32le
 unpackWord32 = DB.runGet DB.getWord32le
 
 type Objects = [(Word32, Offset)]
@@ -17,7 +39,8 @@ type PackState = StateT Objects (StateT [Fixup] (StateT BS.ByteString Identity))
 
 pack :: CEnv -> BS.ByteString
 pack env = result where
-    (((_, objects), fixups), bytes) = runIdentity $ runStateT (runStateT (runStateT (pack' env) []) []) BS.empty
+    (((_, objects), fixups), bytes) = 
+        runIdentity $ runStateT (runStateT (runStateT (pack' env) []) []) BS.empty
     header = mk_header fixups
     new_fixups  = map ((fromIntegral $ BS.length header)+) fixups
     new_header  = mk_header $ traceIt new_fixups
@@ -42,7 +65,8 @@ replace_word32 bytes objects index = result where
     --reconnect everything
     result = BS.concat [start, new_word_bytes, end']
 
-replace_fixups bytes fixups objects = foldl (\b f -> replace_word32 b objects f) bytes fixups
+replace_fixups bytes fixups objects = 
+    foldl (\b f -> replace_word32 b objects f) bytes fixups
 
 
 
@@ -65,13 +89,15 @@ add_id i = do
     index <- get_index
     modify ((fromIntegral i, fromIntegral index):)
 
-pack_value :: Int -> CValue -> PackState () 
+pack_value :: Int -> MetaValue -> PackState () 
 pack_value i v = do add_id i; pack_value' v
 
-pack_value' :: CValue -> PackState ()
+encodePrimitive = error "encodePrimitive"
+
+pack_value' :: MetaValue -> PackState ()
 pack_value' (Struct members) = mapM_ pack_value' members
-pack_value' (Union x i typ)  = pack_and_pad x $ fromIntegral $ size_of_t typ 
-pack_value' (Primitive x)    = append_bytestring $ DB.encode x
+pack_value' (Union typ i x)  = pack_and_pad x $ fromIntegral $ sum $ map sizeOf typ 
+pack_value' (Primitive x)    = append_bytestring $ encodePrimitive x
 pack_value' (Array xs)       = mapM_ pack_value' xs
 pack_value' (Pointer (Id i)) = do 
         index <- fromIntegral <$> get_index
@@ -79,22 +105,19 @@ pack_value' (Pointer (Id i)) = do
         append_bytestring $ packWord32 $ i
 pack_value' (Member x count) = pack_and_pad x count 
  
-pack_and_pad :: CValue -> Word32 -> PackState ()
+pack_and_pad :: MetaValue -> Word32 -> PackState ()
 pack_and_pad x count = do pack_value' x; pad count
 
-pad_to amount x =  (((2 * amount) - (x `mod` amount)) `mod` amount) + x 
+ 
 
-encode :: ToMetaValue a => a -> CEnv
-encode x = result where 
-    (value, state) = runState (to_c x) []
-    result = (fromIntegral $ length state, value):state 
+--encode :: ToMetaValue a => a -> CEnv
+--encode x = result where 
+--   (value, state) = runState (toMetaValue x) []
+--    result = (fromIntegral $ length state, value):state 
 
-test_list_g = encode test_list
-packed = pack test_list_g 
 
-as_bytes = BS.unpack packed
 
-as_bytes_a = BS.unpack $ pack $ encode $ test_a
-as_bytes_b = BS.unpack $ pack $ encode $ test_b
 
-write_file = BS.writeFile "test_objects.bin" (BS.append (packWord32 $ fromIntegral $ BS.length packed) packed)
+
+
+
